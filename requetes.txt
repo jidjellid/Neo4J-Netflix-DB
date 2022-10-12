@@ -1,0 +1,194 @@
+//Loading the csv files
+
+LOAD CSV WITH HEADERS FROM "file:/media.csv" as l
+CREATE (media:Media{id:l.show_id,title:l.title});
+ 
+LOAD CSV WITH HEADERS FROM "file:/persons.csv" as l
+CREATE (person:Person{name:l.persons});
+ 
+LOAD CSV WITH HEADERS FROM "file:/countries.csv" as l
+CREATE (country:Country{country:l.country});
+ 
+LOAD CSV WITH HEADERS FROM "file:/types.csv" as l
+CREATE (type:Type{type:l.type});
+ 
+LOAD CSV WITH HEADERS FROM "file:/date_added.csv" as l
+CREATE (date_added:Date_added{date_added:l.date_added});
+ 
+LOAD CSV WITH HEADERS FROM "file:/release_year.csv" as l
+CREATE (release_year:Release_year{release_year:toInteger(l.release_year)});
+ 
+LOAD CSV WITH HEADERS FROM "file:/rating.csv" as l
+CREATE (rating:Rating{rating:l.rating});
+ 
+LOAD CSV WITH HEADERS FROM "file:/duration.csv" as l
+CREATE (duration:Duration{duration:toInteger(l.duration)});
+
+//Create the constraint and indexes
+
+CREATE CONSTRAINT media_title_constraint ON (n: Media) ASSERT (n.title) IS UNIQUE;
+CREATE CONSTRAINT media_id_constraint ON (n: Media) ASSERT (n.id) IS UNIQUE;
+CREATE CONSTRAINT date_added_constraint ON (n: Date_added) ASSERT (n.date_added) IS UNIQUE;
+CREATE CONSTRAINT release_year_constraint ON (n: Release_year) ASSERT (n.release_year) IS UNIQUE;
+CREATE CONSTRAINT rating_constraint ON (n: Rating) ASSERT (n.rating) IS UNIQUE;
+CREATE CONSTRAINT type_constraint ON (n: Type) ASSERT (n.type) IS UNIQUE;
+CREATE CONSTRAINT country_constraint ON (n: Country) ASSERT (n.country) IS UNIQUE;
+CREATE CONSTRAINT duration_constraint ON (n: Duration) ASSERT (n.duration) IS UNIQUE;
+
+CREATE INDEX person_index for (n: Person) ON (n.name);
+
+CREATE FULLTEXT INDEX person_index IF NOT EXISTS
+FOR (n:Person) ON EACH [n.name];
+ 
+CREATE FULLTEXT INDEX title_index IF NOT EXISTS
+FOR (n:Media) ON EACH [n.title];
+
+//Load the relations
+
+:auto USING PERIODIC COMMIT 200
+LOAD CSV WITH HEADERS FROM "file:/cast_edges.csv" as l
+MERGE (media:Media{id:l.show_id})
+MERGE (person:Person{name:l.cast})
+CREATE (person) -[:casted_in]-> (media);
+ 
+LOAD CSV WITH HEADERS FROM "file:/directors_edges.csv" as l
+MERGE (media:Media{id:l.show_id})
+MERGE (person:Person{name:l.director})
+CREATE (person) -[:directed]-> (media);
+ 
+LOAD CSV WITH HEADERS FROM "file:/date_added_edges.csv" as l
+MERGE (media:Media{id:l.show_id})
+MERGE (date_added:Date_added{date_added:l.date_added})
+CREATE (media) -[:added_in]-> (date_added);
+ 
+LOAD CSV WITH HEADERS FROM "file:/country_edges.csv" as l
+MERGE (media:Media{id:l.show_id})
+MERGE (country:Country{country:l.country})
+CREATE (media) -[:made_in]-> (country);
+ 
+LOAD CSV WITH HEADERS FROM "file:/duration_edges.csv" as l
+MERGE (media:Media{id:l.show_id})
+MERGE (duration:Duration{duration:toInteger(l.duration)})
+CREATE (media) -[:has_duration]-> (duration);
+ 
+LOAD CSV WITH HEADERS FROM "file:/release_year_edges.csv" as l
+MERGE (media:Media{id:l.show_id})
+MERGE (release_year:Release_year{release_year:toInteger(l.release_year)})
+CREATE (media) -[:released_in]-> (release_year);
+ 
+LOAD CSV WITH HEADERS FROM "file:/rating_edges.csv" as l
+MERGE (media:Media{id:l.show_id})
+MERGE (rating:Rating{rating:l.rating})
+CREATE (media) -[:is_rated]-> (rating);
+ 
+LOAD CSV WITH HEADERS FROM "file:/type_edges.csv" as l
+MERGE (media:Media{id:l.show_id})
+MERGE (type:Type{type:l.type})
+CREATE (media) -[:type_is]-> (type);
+
+//Examples requests
+
+MATCH (movie:Media)-[:released_in]->(date:Release_year{release_year:2021})
+RETURN movie.title;
+
+MATCH (p:Person)-[:casted_in]->(m:Media) WITH p, count(m) as ctr WHERE ctr>1 RETURN *;
+
+MATCH (m:Media)<-[:directed]-(p:Person)-[:casted_in]->(m) RETURN p.name as name;
+
+MATCH (m:Media)-[:added_in]->(d:Date_added),(m)-[:released_in]->(r:Release_year) WHERE r.release_year = toInteger(lTrim(split(d.date_added, ',')[1])) RETURN m.title as title, r.release_year as year;
+
+MATCH (p1:Person)-[:directed]->(m:Media),(m)-[:type_is]->(t1:Type{type:"TV SHOW"}) WITH collect(distinct p1) as directors
+MATCH (p2:Person)-[:directed]->(m),(m)-[:type_is]->(t2:Type{type:"Movie"}) WHERE not p2 in directors RETURN DISTINCT p2;
+
+MATCH (p1:Person)-[:casted_in]->(m:Media),(m)-[:type_is]->(t1:Type{type:"Movie"}) WITH collect(distinct p1) as directors
+MATCH (p2:Person)-[:casted_in]->(m2:Media),(m2)-[:type_is]->(t2:Type{type:"TV Show"}) WITH directors, p2, t2, count(m2) as ctr WHERE (not p2 in directors) and (ctr>1) RETURN p2;
+
+MATCH (m:Media)-[r:has_duration]->(d:Duration),(m)-[:made_in]->(c:Country{country:"France"}),(m)-[:type_is]->(t:Type{type:"Movie"}) WHERE d.duration > 120 RETURN m.title,d.duration;
+
+MATCH (p:Person)-[:casted_in]->(m:Media),(m)-[:is_rated]->(r:Rating{rating:"PG-13"}) RETURN p,m,r;
+
+MATCH (m:Media)-[r:has_duration]->(d:Duration),(m)-[:type_is]->(t:Type) WHERE d.duration > 3 and t.type = "TV Show" RETURN m.title,d.duration,t.type;
+
+MATCH (c:Country)<-[:made_in]-(m:Media) RETURN c.country, COUNT(c.country) as count ORDER BY count DESC;
+
+//Graph algorithms
+
+
+//Creation
+CALL gds.graph.create(
+  "data2",
+  ['Person','Media'],
+  'casted_in'
+)
+ 
+YIELD
+  graphName,
+  nodeProjection,
+  nodeCount,
+  relationshipProjection,
+  relationshipCount,
+  createMillis
+ 
+RETURN
+  graphName,
+  nodeProjection,
+  nodeCount,
+  relationshipProjection,
+  relationshipCount,
+  createMillis;
+
+//Calls
+
+CALL gds.pageRank.stream('data2')
+YIELD nodeId, score
+RETURN gds.util.asNode(nodeId).title AS title, score
+ORDER BY score DESC, title ASC;
+
+CALL gds.degree.stream('data2')
+YIELD nodeId, score
+RETURN gds.util.asNode(nodeId).name AS name, score AS followers
+ORDER BY followers DESC, name DESC;
+
+//Mutation
+CALL gds.degree.mutate('data2', { mutateProperty: 'degree' })
+YIELD centralityDistribution, nodePropertiesWritten
+RETURN centralityDistribution.min AS minimumScore, centralityDistribution.mean AS meanScore, nodePropertiesWritten;
+
+CALL gds.beta.knn.stream('data2', {
+    topK: 1,
+    nodeWeightProperty: 'degree'
+})
+YIELD node1, node2, similarity
+RETURN gds.util.asNode(node1).name AS Person1, gds.util.asNode(node2).name AS Person2, similarity
+ORDER BY similarity DESCENDING, Person1, Person2;
+
+//Stats
+
+CALL gds.nodeSimilarity.stream(
+  'data2',
+  {topK:1,
+  degreeCutoff:5}
+)
+ 
+YIELD
+  node1, node2, similarity
+ 
+RETURN gds.util.asNode(node1).name,gds.util.asNode(node2).name, similarity
+ORDER BY similarity DESC;
+
+CALL gds.nodeSimilarity.stats(
+  'data2',
+  {topK:1,
+  degreeCutoff:5}
+)
+ 
+YIELD
+  nodesCompared, similarityPairs
+ 
+RETURN nodesCompared, similarityPairs;
+
+MATCH (p1:Person{name:"Paul Killam"})-[r1:casted_in]->(m:Media)<-[r2:casted_in]-(p2:Person{name:"Maisie Benson"})
+RETURN p1,r1,m,r2,p2;
+
+MATCH (p1:Person{name:"Mousam"})-[r1:casted_in]->(m:Media)<-[r2:casted_in]-(p2:Person{name:"Swapnil"})
+RETURN p1,r1,m,r2,p2;
